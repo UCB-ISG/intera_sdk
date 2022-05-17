@@ -113,7 +113,7 @@ def main():
         if not args.do_not_send:
             rospy.logwarn('Make sure the surrounding area around the robot is '
                           'collision free prior to sending random trajectories.')
-            k = input("Press 'Enter' when the robot is clear to continue...")
+            k = eval(input("Press 'Enter' when the robot is clear to continue..."))
             if k:
                 rospy.logerr("Please press only the 'Enter' key to begin execution. Exiting...")
                 sys.exit(1)

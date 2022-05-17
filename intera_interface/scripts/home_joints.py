@@ -57,7 +57,7 @@ class HomeJoints(object):
 
     def _homing_state_cb(self, msg):
         with self._hcb_lock:
-            self._homing_state = dict(zip(msg.name, msg.state))
+            self._homing_state = dict(list(zip(msg.name, msg.state)))
 
     def _joints_are_homed(self):
         with self._hcb_lock:
@@ -81,7 +81,7 @@ class HomeJoints(object):
                 return False
             with self._hcb_lock:
                 if bool(self._homing_state):
-                    homing_joints = copy.deepcopy(self._homing_state.keys())
+                    homing_joints = copy.deepcopy(list(self._homing_state.keys()))
                     break
             sleep_rate.sleep()
         # Construct Homing Command

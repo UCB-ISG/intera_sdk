@@ -98,7 +98,7 @@ def map_keyboard(side):
                 print("key bindings: ")
                 print("  Esc: Quit")
                 print("  ?: Help")
-                for key, val in sorted(bindings.items(),
+                for key, val in sorted(list(bindings.items()),
                                        key=lambda x: x[1][2]):
                     print("  %s: %s" % (key, val[2]))
 

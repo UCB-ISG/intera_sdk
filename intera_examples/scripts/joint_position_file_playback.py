@@ -40,12 +40,12 @@ def clean_line(line, names):
     #convert the line of strings to a float or None
     line = [try_float(x) for x in line.rstrip().split(',')]
     #zip the values with the joint names
-    combined = zip(names[1:], line[1:])
+    combined = list(zip(names[1:], line[1:]))
     #take out any tuples that have a none value
     cleaned = [x for x in combined if x[1] is not None]
     #convert it to a dictionary with only valid commands
     command = dict(cleaned)
-    right_command = dict((key, command[key]) for key in command.keys()
+    right_command = dict((key, command[key]) for key in list(command.keys())
                          if key[:-2] == 'right_')
     return (command, right_command, line)
 
