@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-
+#! /usr/bin/env python
 # Copyright (c) 2013-2018, Rethink Robotics Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -109,7 +108,7 @@ def map_file(filename, limb, loops=1):
                 if has_gripper and gripper.name in cmd:
                         gripper.set_position(cmd[gripper.name])
                 rate.sleep()
-        print
+        print()
     return True
 
 def main():

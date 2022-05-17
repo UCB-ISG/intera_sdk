@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-
+#! /usr/bin/env python
 # Copyright (c) 2013-2018, Rethink Robotics Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -105,7 +104,7 @@ class Wobbler(object):
 
         print("Wobbling. Press Ctrl-C to stop...")
         while not rospy.is_shutdown():
-            self._pub_rate.publish(self._rate)
+            self._pub_rate.publish(int(self._rate))
             elapsed = rospy.Time.now() - start
             cmd = make_cmd(self._right_joint_names, elapsed)
             self._right_arm.set_joint_velocities(cmd)
