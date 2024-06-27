@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import rospy
-from intera_core_msgs.msg import IONodeConfiguration
+from intera_core_msgs.msg import (
+    IONodeConfiguration,
+    IONodeStatus,
+    IOComponentCommand
+)
 import intera_dataflow
-from intera_io import IODeviceInterface
-
+from intera_io import (
+    IODeviceInterface,
+    IOCommand
+)
 
 class Gripper(object):
     """
@@ -36,62 +43,27 @@ class Gripper(object):
         @type calibrate: bool
         @param calibrate: Attempts to calibrate the gripper when initializing class (defaults True)
         """
-        self.devices = None
-        self.name = ee_name
-        if ee_name == 'right' or ee_name == 'left':
-            rospy.logwarn(("Specifying gripper by 'side' is deprecated, please use full name"
-                " (ex: 'right_gripper')."))
-            self.name = '_'.join([ee_name, 'gripper'])
-        self.ee_config_sub = rospy.Subscriber('/io/end_effector/config', IONodeConfiguration, self._config_callback)
-        # Wait for the gripper device status to be true
-        intera_dataflow.wait_for(
-            lambda: not self.devices is None, timeout=5.0,
-            timeout_msg=("Failed to get gripper. No gripper attached on the robot.")
-        )
 
-        self.gripper_io = IODeviceInterface("end_effector", self.name)
-        if self.has_error():
-            self.reboot()
-            calibrate = True
-        if calibrate and not self.is_calibrated():
-            self.calibrate()
+        self._gripper = SimpleClickSmartGripper2('stp_022312TP99620')
+        self._is_clicksmart = isinstance(self._gripper, SimpleClickSmartGripper2)
 
-    def _config_callback(self, msg):
-        """
-        config topic callback
-        """
-        if msg.devices != []:
-            if str(msg.devices[0].name) == self.name:
-                self.devices = msg
+        if self._is_clicksmart:
+            if self._gripper.needs_init():
+                self._gripper.initialize()
 
-    def reboot(self):
-        """
-        Power cycle the gripper, removing calibration information.
-        """
-        self.gripper_io.set_signal_value("reboot", True)
 
-    def stop(self):
-        """
-        Set the gripper to stop executing command at the current
-        position, apply holding force.
-        """
-        self.gripper_io.set_signal_value("go", False)
 
-    def start(self):
-        """
-        Set the gripper to start executing command at the current
-        position, apply holding force.
-        """
-        self.gripper_io.set_signal_value("go", True)
 
-    def open(self, position=MAX_POSITION):
+
+    def open(self):
         """
         Set the gripper position to open by providing opening position.
 
-        @type: float
-        @param: the postion of gripper in meters
         """
-        self.gripper_io.set_signal_value("position_m", position)
+        if self._is_clicksmart:
+            self._gripper.set_ee_signal_value('grip', False)
+        else:
+            self.gripper_io.set_signal_value("position_m", position)
 
     def close(self, position=MIN_POSITION):
         """
@@ -100,56 +72,12 @@ class Gripper(object):
         @type: float
         @param: the postion of gripper in meters
         """
-        self.gripper_io.set_signal_value("position_m", position)
+        if self._is_clicksmart:
+            self._gripper.set_ee_signal_value('grip', True)
+        else:
+            self.gripper_io.set_signal_value("position_m", position)
 
-    def has_error(self):
-        """
-        Returns a bool describing whether the gripper is in an error state.
-        (True: Error detected, False: No errors)
 
-        @rtype: bool
-        @return: True if in error state, False otherwise
-        """
-        return self.gripper_io.get_signal_value("has_error")
-
-    def is_ready(self):
-        """
-        Returns bool describing if the gripper ready, i.e. is
-        calibrated, not busy (as in resetting or rebooting), and
-        not moving.
-
-        @rtype: bool
-        @return: True if in ready state, False otherwise
-        """
-        return (self.is_calibrated() and not self.has_error()
-          and not self.is_moving())
-
-    def is_moving(self):
-        """
-        Returns bool describing if the gripper is moving.
-
-        @rtype: bool
-        @return: True if in moving state, False otherwise
-        """
-        return self.gripper_io.get_signal_value("is_moving")
-
-    def is_gripping(self):
-        """
-        Returns bool describing if the gripper is gripping.
-
-        @rtype: bool
-        @return: True if in gripping state, False otherwise
-        """
-        return self.gripper_io.get_signal_value("is_gripping")
-
-    def is_calibrated(self):
-        """
-        Returns bool describing if the gripper is calibrated.
-
-        @rtype: bool
-        @return: True if successfully calibrated, False otherwise
-        """
-        return self.gripper_io.get_signal_value("is_calibrated")
 
     def calibrate(self):
         """
@@ -159,125 +87,270 @@ class Gripper(object):
         @rtype: bool
         @return: True if calibration was successful, False otherwise
         """
-        self.gripper_io.set_signal_value("calibrate", True)
-        success = intera_dataflow.wait_for(
-            lambda: self.is_calibrated(),
-            timeout=5.0,
-            raise_on_error=False
+
+        if self._is_clicksmart:
+            self._gripper.set_ee_signal_value('grip', True)
+            intera_dataflow.wait_for(
+                lambda: self._gripper.get_ee_signal_value("closed"),
+                timeout=5.0,
+                raise_on_error=False
+            )
+            self._gripper.set_ee_signal_value('grip', False)
+
+
+class SimpleClickSmartGripper2(object):
+    """
+    Bare bones Interface class for a ClickSmart gripper on the Intera Research Robot.
+
+    This ClickSmart interface uses "End Effector (EE) Signal Types" to
+    reference the Input/Output Signals configured on the ClickSmart device.
+    EE Signal Types include types such as "grip", (is)"open", (is)"closed",
+    (set)"object_kg". Each set of EE Signals is associated with a given
+    endpoint_id, but this endpoint_id can be left out in most of the interfaces
+    if a ClickSmart device only has a single endpoint configured.
+
+    ClickSmart devices can be configured using the Intera Studio GUI. The
+    configurations are stored on the ClickSmart device itself.
+    """
+    def __init__(self, ee_device_id, initialize=True):
+        self.name = ee_device_id
+        self.endpoint_map = None
+        self.gripper_io = None
+        self._node_state = None
+        self._node_device_status = None
+
+        self._node_command_pub = rospy.Publisher('io/end_effector/command', IOComponentCommand, queue_size=10)
+        self._node_state_sub = rospy.Subscriber('io/end_effector/state', IONodeStatus, self._node_state_cb)
+
+        # Wait for the gripper device status to be true
+        intera_dataflow.wait_for(
+            lambda: self._node_device_status is not None,
+            timeout=5.0, raise_on_error=initialize,
+            timeout_msg=("Failed to get gripper. No gripper attached on the robot.")
         )
-        if not success:
-            rospy.logerr("({0}) calibration failed.".format(self.name))
-        return success
 
-    def get_position(self):
+        self.gripper_io = IODeviceInterface("end_effector", self.name)
+        self.gripper_io.config_changed.connect(self._load_endpoint_info)
+        if self.gripper_io.is_config_valid():
+            self._load_endpoint_info()
+
+        if initialize and self.needs_init():
+            self.initialize()
+
+    def _node_state_cb(self, msg):
+        # if we don't have a message yet, or if the timestamp is different: search for our device
+        if not self._node_state or IODeviceInterface.time_changed(self._node_state.time, msg.time):
+            self._node_state = msg
+            if len(msg.devices) and msg.devices[0].name == self.name:
+                self._node_device_status = msg.devices[0].status
+            else:
+                # device removed
+                self._node_device_status = None
+
+    def _load_endpoint_info(self):
+        self._device_config = json.loads(self.config.device.config)
+        self.endpoint_map = self._device_config['params']['endpoints']
+
+    def is_ready(self):
         """
-        Returns float describing the gripper position in meters.
+        Returns bool describing if the gripper is ready to control,
+        (i.e. initialized ('activated'), not busy, no errors).
 
-        @rtype: float
-        @return: Current Position value in Meters (m)
+        @rtype: bool
+        @return: True if in ready state, False otherwise
         """
-        return self.gripper_io.get_signal_value("position_response_m")
+        return (self._node_device_status and self._node_device_status.tag == 'ready'
+            and self.gripper_io.is_valid())
 
-    def set_position(self, position):
+    def needs_init(self):
         """
-        Set the position of gripper.
+        Returns True if device is not initialized and can be initialized
+        now ('activated').
 
-        @type: float
-        @param: the postion of gripper in meters (m)
+        @rtype: bool
+        @return: True if not initialized and can be, False otherwise
         """
-        self.gripper_io.set_signal_value("position_m", position)
+        return (self._node_device_status and (self._node_device_status.tag == 'down'
+            or self._node_device_status.tag == 'unready'))
 
-    def set_velocity(self, speed):
+    def initialize(self, timeout=5.0):
         """
-        DEPRECATED: Use set_cmd_velocity(speed)
+        Activate ClickSmart - initializes device and signals and attaches
+        the EE's URDF model to the internal RobotModel. Compensation
+        of the EE's added mass may cause arm to move.
 
-        Set the velocity at which the gripper position movement will execute.
-
-        @type: float
-        @param: the velocity of gripper in meters per second (m/s)
+        @type timeout: float
+        @param timeout: timeout in seconds
         """
-        rospy.logwarn("The set_velocity function is DEPRECATED. Please "
-                      "update your code to use set_cmd_velocity() instead")
-        self.set_cmd_velocity(speed)
+        rospy.loginfo("Activating ClickSmart...")
+        cmd = IOCommand('activate', {"devices": [self.name]})
+        msg = cmd.as_msg()
+        self._node_command_pub.publish(msg)
+        if timeout:
+            intera_dataflow.wait_for(
+                lambda: self.is_ready(), timeout=timeout,
+                timeout_msg=("Failed to initialize gripper.")
+            )
 
-    def set_cmd_velocity(self, speed):
+    def get_ee_signal_value(self, ee_signal_type, endpoint_id=None):
         """
-        Set the commanded velocity at which the gripper position
-        movement will execute.
+        Return current value of the given EE Signal on the ClickSmart.
 
-        @type: float
-        @param: the velocity of gripper in meters per second (m/s)
+        EE Signals are identified by "type" (such as "grip", (is)"open", etc.)
+        and are configured per endpoint. If the ClickSmart has multiple endpoints,
+        optionally specify the endpoint_id with which the signal is associated.
+
+        @type ee_signal_type: str
+        @param ee_signal_type: EE Signal Type of the signal to return; one of
+            those listed in get_ee_signals().
+        @type endpoint_id: str
+        @param endpoint_id: endpoint_id associated with signal; (default: 1st endpoint found)
+
+        @rtype: bool|float
+        @return: value of signal
         """
-        self.gripper_io.set_signal_value("speed_mps", speed)
+        (ept_id, endpoint_info) = self.get_endpoint_info(endpoint_id)
+        if ee_signal_type in endpoint_info:
+            return self.get_signal_value(endpoint_info[ee_signal_type])
 
-    def get_cmd_velocity(self):
+    def set_ee_signal_value(self, ee_signal_type, value, endpoint_id=None, timeout=5.0):
         """
-        Get the commanded velocity at which the gripper position
-        movement executes.
+        Sets the value of the given EE Signal on the ClickSmart.
 
-        @rtype: float
-        @return: the velocity of gripper in meters per second (m/s)
+        EE Signals are identified by "type" (such as "grip", (is)"open", etc.)
+        and are configured per endpoint. If the ClickSmart has multiple endpoints,
+        optionally specify the endpoint_id with which the signal is associated.
+
+        @type ee_signal_type: str
+        @param ee_signal_type: EE Signal Type of the signal to return; one of
+            those listed in get_ee_signals().
+        @type value: bool|float
+        @param value: new value to set the signal to
+        @type endpoint_id: str
+        @param endpoint_id: endpoint_id associated with signal; (default: 1st endpoint found)
+        @type timeout: float
+        @param timeout: timeout in seconds
         """
-        return self.gripper_io.get_signal_value("speed_mps")
+        (ept_id, endpoint_info) = self.get_endpoint_info(endpoint_id)
+        if ee_signal_type in endpoint_info:
+            self.set_signal_value(endpoint_info[ee_signal_type], value)
 
-    def get_force(self):
+    def get_ee_signals(self, endpoint_id=None):
         """
-        Returns the force sensed by the gripper in estimated Newtons.
+        Returns dict of EE Signals by EE Signal Type for given endpoint.
 
-        @rtype: float
-        @return: Current Force value in Newton-Meters (N-m)
+        Use the EE Signal Types (the keys) to specify signals in
+        get_ee_signal_value() and set_ee_signal_value().
+
+        EE Signals are identified by "type" (such as "grip", (is)"open", etc.)
+        and are configured per endpoint. If the ClickSmart has multiple endpoints,
+        optionally specify the endpoint_id with which the signal is associated.
+
+        @type endpoint_id: str
+        @param endpoint_id: endpoint_id associated with signal; (default: 1st endpoint found)
+        @rtype: dict({str:str})
+        @return: dict of EE Signal Types to signal_name
         """
-        return self.gripper_io.get_signal_value("force_response_n")
+        (ept_id, endpoint_info) = self.get_endpoint_info(endpoint_id)
+        exclude = ['endpoint_id', 'label', 'type', 'actuationTimeS']
+        return {k: v for k,v in endpoint_info.items() if k not in exclude}
 
-    def set_object_weight(self, object_weight):
+    def get_all_ee_signals(self):
         """
-        Set the weight of the object in kilograms.
+        Returns dict of EE Signals by EE Signal Type for all endpoints,
+        organized under endpoint_id.
 
-        Object mass is set as a point mass at the location of the tool endpoint
-        link in the URDF (e.g. 'right_gripper_tip'). The robot's URDF and
-        internal robot model will be updated to compensate for the mass.
+        Use the EE Signal Types (the keys) to specify signals in
+        get_ee_signal_value() and set_ee_signal_value().
 
-        @type: float
-        @param: the object weight in kilograms (kg)
+        EE Signals are identified by "type" (such as "grip", (is)"open", etc.)
+        and are configured per endpoint. If the ClickSmart has multiple endpoints,
+        optionally specify the endpoint_id with which the signal is associated.
+
+        @type endpoint_id: str
+        @param endpoint_id: endpoint_id associated with signal; (default: 1st endpoint found)
+        @rtype: dict({str:dict({str:str})})
+        @return: dicts for each endpoint_id of EE Signal Types to signal_name
         """
-        self.gripper_io.set_signal_value(self.name+"_tip_object_kg", object_weight)
+        info = dict()
+        for ept in self.list_endpoint_names():
+            info[ept] = self.get_ee_signals(ept)
+        return info
 
-    def get_object_weight(self):
+    def get_all_signals(self):
         """
-        Get the currently configured weight of the object in kilograms.
+        Returns generic info for all IO Signals on device, in a flat map keyed by signal_name.
 
-        Object mass is set as a point mass at the location of the tool endpoint
-        link in the URDF (e.g. 'right_gripper_tip'). The robot's URDF and
-        internal robot model will be updated to compensate for the mass.
+        @rtype: dict
+        @return: generic data-type, value, and IO Data for all signals
+        """
+        return self.gripper_io.signals
 
-        @rtype: float
-        @return: the object weight in kilograms (kg)
+    def list_endpoint_names(self):
         """
-        return self.gripper_io.get_signal_value(self.name+"_tip_object_kg")
+        Returns list of endpoint_ids currently configured on this ClickSmart device.
 
-    def set_dead_zone(self, dead_zone):
+        @rtype: list [str]
+        @return: list of endpoint_ids in ClickSmart config
         """
-        Set the gripper dead zone describing the position error threshold
-        where a move will be considered successful.
+        if self.endpoint_map:
+            return list(self.endpoint_map.keys())
+        else:
+            return []
 
-        @type: float
-        @param: the dead zone of gripper in meters
+    def get_endpoint_info(self, endpoint_id=None):
         """
-        self.gripper_io.set_signal_value("dead_zone_m", dead_zone)
+        Returns the endpoint_id and endpoint info for the default endpoint,
+        or for the given endpoint_id if specified.
 
-    def get_dead_zone(self):
-        """
-        Get the gripper dead zone describing the position error threshold
-        where a move will be considered successful.
+        Use to find the default endpoint_id by calling without args.
+        Or lookup the current configuration info for a specific endpoint,
+        including EE Signals, and Intera UI labels.
 
-        @rtype: float
-        @return: the dead zone of gripper in meters
+        @type endpoint_id: str
+        @param endpoint_id: optional endpoint_id to lookup; default: looksup
+            and returns info for the default endpoint_id of this ClickSmart
+        @rtype: tuple [ str, dict]
+        @return: (endpoint_id, endpoint_info) - the default endpoint_id (or the one specified)
+            and signal/config info associated with endpoint
         """
-        return self.gripper_io.get_signal_value("dead_zone_m")
+        if self.endpoint_map is None or len(list(self.endpoint_map.keys())) <= 0:
+            rospy.logerr('Cannot use endpoint signals without any endpoints!')
+            return
+        endpoint_id = list(self.endpoint_map.keys())[0] if endpoint_id is None else endpoint_id
+        return (endpoint_id, self.endpoint_map[endpoint_id])
 
-    def set_holding_force(self, holding_force):
+    def send_configuration(self, config, timeout=5.0):
         """
-        @deprecated: Function deprecated. Holding force is now a fixed value.
+        Send a new JSON EndEffector configuration to the device.
+
+        @type config: dict
+        @param config: new json config to save on device
+        @type timeout: float
+        @param timeout: timeout in seconds - currently will wait for a minimum of
+                        3 seconds before returning (to allow for reconfiguration)
         """
-        rospy.logerr("Removed variable holding force to improve gripper performance.")
-        return False
+        rospy.loginfo("Reconfiguring ClickSmart...")
+
+        cmd = IOCommand('reconfigure', {"devices": {self.name: config}, "write_config": True})
+        msg = cmd.as_msg()
+        self._node_command_pub.publish(msg)
+        if timeout:
+            # allow time for reconfiguration and storage write process
+            # TODO: use cmd acknowlegment timestamp, not hard-coded delay
+            delay = 3.0
+            delay_time = rospy.Time.now() + rospy.Duration(delay)
+            intera_dataflow.wait_for(
+                lambda: (rospy.Time.now() > delay_time and
+                    (self.is_ready() or self.needs_init())),
+                timeout=max(timeout, delay),
+                body=lambda: self._node_command_pub.publish(msg),
+                timeout_msg=("Failed to reconfigure gripper.")
+            )
+
+    def __getattr__(self, name):
+        """
+        This is a proxy-pass through mechanism that lets you look up methods and variables
+        on the underlying IODeviceInterface for the ClickSmart, as if they were on this class.
+        """
+        return getattr(self.gripper_io, name)
