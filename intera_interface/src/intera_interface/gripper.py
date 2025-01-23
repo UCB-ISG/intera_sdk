@@ -44,7 +44,7 @@ class Gripper(object):
         @param calibrate: Attempts to calibrate the gripper when initializing class (defaults True)
         """
 
-        self._gripper = SimpleClickSmartGripper2('stp_022312TP99620')
+        self._gripper = SimpleClickSmartGripper2('stp_022412TP99883')
         self._is_clicksmart = isinstance(self._gripper, SimpleClickSmartGripper2)
 
         if self._is_clicksmart:
