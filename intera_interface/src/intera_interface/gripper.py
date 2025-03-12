@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import json
 import rospy
 from intera_core_msgs.msg import (
@@ -44,7 +45,7 @@ class Gripper(object):
         @param calibrate: Attempts to calibrate the gripper when initializing class (defaults True)
         """
 
-        self._gripper = SimpleClickSmartGripper2('stp_022412TP99883')
+        self._gripper = SimpleClickSmartGripper2(os.getenv('SAWYER_GRIPPER_NODENAME', 'right_gripper'))
         self._is_clicksmart = isinstance(self._gripper, SimpleClickSmartGripper2)
 
         if self._is_clicksmart:
